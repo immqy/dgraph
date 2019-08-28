@@ -42,7 +42,10 @@ func TestQueryRewriting(t *testing.T) {
 	err = yaml.Unmarshal(b, &tests)
 	require.NoError(t, err, "Unable to unmarshal tests to yaml.")
 
-	gqlSchema := schema.AsSchema(test.LoadSchema(t, testGQLSchema))
+	gql, err := ioutil.ReadFile("schema.graphql")
+	require.NoError(t, err, "Unable to read schema file")
+
+	gqlSchema := schema.AsSchema(test.LoadSchema(t, string(gql)))
 
 	testRewriter := NewQueryRewriter()
 
