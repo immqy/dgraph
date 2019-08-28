@@ -54,21 +54,6 @@ enum DgraphIndex {
 	hour
 }
 
-enum DgraphIndex {
-	int
-	float
-	bool
-	hash
-	exact
-	term
-	fulltext
-	trigram
-	year
-	month
-	day
-	hour
-}
-
 directive @hasInverse(field: String!) on FIELD_DEFINITION
 directive @searchable(by: DgraphIndex!) on FIELD_DEFINITION
 
