@@ -14,20 +14,20 @@
  * limitations under the License.
  */
 
-package resolve
+package rewrite
 
 import (
-	"context"
 	"io/ioutil"
 	"testing"
 
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/dgraph"
+	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/schema"
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/test"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v2"
 )
 
-// Tests showing that the query pipeline produces the expected Dgraph queries
+// Tests showing that the query rewriter produces the expected Dgraph queries
 
 type QueryRewritingCase struct {
 	Name     string
@@ -35,47 +35,38 @@ type QueryRewritingCase struct {
 	DGQuery  string
 }
 
-// A queryRecorder mocs the Dgraph interface under the resolver and just records
-// the query it gets
-type queryRecorder struct {
-	query string
-}
-
-func (qr *queryRecorder) Query(ctx context.Context, qb *dgraph.QueryBuilder) ([]byte, error) {
-	var err error
-	qr.query, err = qb.AsQueryString()
-	return []byte("{}"), err
-}
-
-func (qr *queryRecorder) Mutate(ctx context.Context, val interface{}) (map[string]string, error) {
-	return map[string]string{"newnode": "0x4"}, nil
-}
-
-func (qr *queryRecorder) DeleteNode(ctx context.Context, uid uint64) error {
-	return nil
-}
-
-func (qr *queryRecorder) AssertType(ctx context.Context, uid uint64, typ string) error {
-	return nil
-}
-
 func TestQueryRewriting(t *testing.T) {
-	b, err := ioutil.ReadFile("resolver_query_test.yaml")
+	b, err := ioutil.ReadFile("query_test.yaml")
 	require.NoError(t, err, "Unable to read test file")
 
 	var tests []QueryRewritingCase
 	err = yaml.Unmarshal(b, &tests)
 	require.NoError(t, err, "Unable to unmarshal tests to yaml.")
 
-	gqlSchema := test.LoadSchema(t, testGQLSchema)
+	gql, err := ioutil.ReadFile("schema.graphql")
+	require.NoError(t, err, "Unable to read schema file")
+
+	gqlSchema := schema.AsSchema(test.LoadSchema(t, string(gql)))
+
+	testRewriter := NewQueryRewriter()
 
 	for _, tcase := range tests {
 		t.Run(tcase.Name, func(t *testing.T) {
-			client := &queryRecorder{}
-			resp := resolveWithClient(gqlSchema, tcase.GQLQuery, client)
 
-			require.Nil(t, resp.Errors)
-			require.Equal(t, tcase.DGQuery, client.query)
+			op, err := gqlSchema.Operation(
+				&schema.Request{
+					Query: tcase.GQLQuery,
+				})
+			require.NoError(t, err)
+			gqlQuery := test.GetQuery(t, op)
+
+			dgQuery, err := testRewriter.Rewrite(gqlQuery)
+
+			require.Nil(t, err)
+			require.Equal(t, tcase.DGQuery, dgraph.AsString(dgQuery))
 		})
 	}
 }
+
+//
+// plus add a case for bad UID

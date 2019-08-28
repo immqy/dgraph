@@ -31,7 +31,6 @@ const (
 // MutationBuilder can build a Dgraph JSON mutation from a GraphQL mutation.
 type MutationBuilder interface {
 	Build(m schema.Mutation) (interface{}, error)
-	GetUpdUID(m schema.Mutation) (uint64, error)
 }
 
 type mutationBuilder struct{}
@@ -113,7 +112,7 @@ func (mb *mutationBuilder) Build(m schema.Mutation) (interface{}, error) {
 
 			val = val["patch"].(map[string]interface{})
 
-			uid, err := mb.GetUpdUID(m)
+			uid, err := getUpdUID(m)
 			if err != nil {
 				return nil, err
 			}
@@ -153,9 +152,7 @@ func (mb *mutationBuilder) Build(m schema.Mutation) (interface{}, error) {
 				"this indicates a GraphQL validation error.")
 }
 
-// FIXME: this will go once query is also refactored.  ATM it's just required so that
-// the resolved mutation can get back the id it needs to rewrite the query.
-func (mb *mutationBuilder) GetUpdUID(m schema.Mutation) (uint64, error) {
+func getUpdUID(m schema.Mutation) (uint64, error) {
 	val := m.ArgValue(schema.InputArgName).(map[string]interface{})
 	idArg := val[m.MutatedType().IDField().Name()]
 

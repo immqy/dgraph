@@ -17,185 +17,26 @@
 package dgraph
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
-	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/schema"
 	"github.com/dgraph-io/dgraph/gql"
 )
 
-// QueryBuilder is an implementation of the builder pattern that can construct
-// a gql.GraphQuery.
-type QueryBuilder struct {
-	graphQuery *gql.GraphQuery
-	err        error
-}
-
-// NewQueryBuilder returns a fresh QueryBuilder
-func NewQueryBuilder() *QueryBuilder {
-	return &QueryBuilder{
-		graphQuery: &gql.GraphQuery{},
-	}
-}
-
-// HasErrors returns true if qb contains errors and false otherwise.
-func (qb *QueryBuilder) HasErrors() bool {
-	return qb.err != nil
-}
-
-// WithAttr sets the root query name.
-func (qb *QueryBuilder) WithAttr(attr string) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	qb.graphQuery.Attr = attr
-	return qb
-}
-
-// WithAlias sets the root query alias
-func (qb *QueryBuilder) WithAlias(alias string) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	qb.graphQuery.Alias = alias
-	return qb
-}
-
-// WithIDArgRoot sets the query root func to a query for the ID argument in q.
-// qb will contain an error if there's no ID argument in q.
-func (qb *QueryBuilder) WithIDArgRoot(q schema.Query) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	uid, err := q.IDArgValue()
-	if err != nil {
-		qb.err = err
-		return qb
-	}
-
-	return qb.WithUIDRoot(uid)
-}
-
-// WithUIDRoot sets the root func as a uid() function for uid.
-func (qb *QueryBuilder) WithUIDRoot(uid uint64) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	qb.graphQuery.Func = &gql.Function{
-		Name: "uid",
-		UID:  []uint64{uid},
-	}
-
-	return qb
-}
-
-// WithTypeFilter sets the root filter as requiring a type named as per typ.
-func (qb *QueryBuilder) WithTypeFilter(typ string) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	qb.graphQuery.Filter = &gql.FilterTree{
-		Func: &gql.Function{
-			Name: "type",
-			Args: []gql.Arg{{Value: typ}},
-		},
-	}
-
-	return qb
-}
-
-// WithField adds a child query for the given field name.
-func (qb *QueryBuilder) WithField(field string) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	qb.graphQuery.Children = append(qb.graphQuery.Children,
-		&gql.GraphQuery{
-			Attr: field,
-		})
-
-	return qb
-}
-
-// WithSelectionSetFrom adds child queries for all fields in the selection set
-// of fld, and recursively so for all fields in the selection set of those fields.
-func (qb *QueryBuilder) WithSelectionSetFrom(fld schema.Field) *QueryBuilder {
-	if qb.HasErrors() {
-		return qb
-	}
-
-	for _, f := range fld.SelectionSet() {
-		qbld := NewQueryBuilder()
-		if f.Alias() != "" {
-			qbld.WithAlias(f.Alias())
-		} else {
-			qbld.WithAlias(f.Name())
-		}
-
-		if f.Type().Name() == schema.IDType {
-			qbld.WithAttr("uid")
-		} else {
-			qbld.WithAttr(fld.Type().Name() + "." + f.Name())
-		}
-
-		// TODO: filters, pagination, etc in here
-		qbld.WithSelectionSetFrom(f)
-
-		q, err := qbld.query()
-		if err != nil {
-			qb.err = err
-			return qb
-		}
-
-		qb.graphQuery.Children = append(qb.graphQuery.Children, q)
-	}
-
-	return qb
-}
-
-// query builds QueryBuilder's query.  If qb.hasErrors(), then the returned
-// error is non-nil.
-func (qb *QueryBuilder) query() (*gql.GraphQuery, error) {
-	if qb == nil || qb.graphQuery == nil {
-		return nil, errors.New("nil query builder")
-	}
-
-	return qb.graphQuery, qb.err
-}
-
-// AsQueryString renders a QueryBuilder as the string that a user would recognise as
-// a Dgraph query.
-func (qb *QueryBuilder) AsQueryString() (string, error) {
-	gq, err := qb.query()
-	if err != nil {
-		return "", err
-	}
-
-	return asString(gq), nil
-}
-
-func asString(query *gql.GraphQuery) string {
-	if query == nil {
-		return ""
-	}
-
+// AsString writes query as an indented GraphQL+- query string.  AsString doesn't
+// validate query, and so doesn't return an error if query is 'malformed' - it might
+// just write something that wouldn't parse as a Dgraph query.
+func AsString(query *gql.GraphQuery) string {
 	var b strings.Builder
 
 	b.WriteString("query {\n")
-	writeQuery(&b, query, "  ")
+	writeQuery(&b, query, "  ", true)
 	b.WriteString("}")
 
 	return b.String()
 }
 
-func writeQuery(b *strings.Builder, query *gql.GraphQuery, prefix string) {
+func writeQuery(b *strings.Builder, query *gql.GraphQuery, prefix string, root bool) {
 	b.WriteString(prefix)
 	if query.Alias != "" {
 		b.WriteString(query.Alias)
@@ -203,13 +44,26 @@ func writeQuery(b *strings.Builder, query *gql.GraphQuery, prefix string) {
 	}
 	b.WriteString(query.Attr)
 
-	writeFunction(b, query.Func)
-	writeFilter(b, query.Filter)
+	if root {
+		writeFunction(b, query)
+	}
+
+	if query.Filter != nil {
+		b.WriteString(" @filter(")
+		writeFilter(b, query.Filter)
+		b.WriteRune(')')
+	}
+
+	if !root && hasOrderOrPage(query) {
+		b.WriteString(" (")
+		writeOrderAndPage(b, query, false)
+		b.WriteRune(')')
+	}
 
 	if len(query.Children) > 0 {
 		b.WriteString(" {\n")
 		for _, c := range query.Children {
-			writeQuery(b, c, prefix+"  ")
+			writeQuery(b, c, prefix+"  ", false)
 		}
 		b.WriteString(prefix)
 		b.WriteString("}")
@@ -217,29 +71,95 @@ func writeQuery(b *strings.Builder, query *gql.GraphQuery, prefix string) {
 	b.WriteString("\n")
 }
 
-func writeFunction(b *strings.Builder, f *gql.Function) {
-	if f != nil {
-		b.WriteString(fmt.Sprintf("(func: %s(0x%x))", f.Name, f.UID[0]))
-		// there's only uid(...) functions so far
+func writeFunction(b *strings.Builder, q *gql.GraphQuery) {
+	if q.Func == nil {
+		return
 	}
+
+	if q.Func.Name == "uid" && len(q.Func.UID) == 1 {
+		b.WriteString(fmt.Sprintf("(func: %s(0x%x))", q.Func.Name, q.Func.UID[0]))
+	} else if q.Func.Name == "type" && len(q.Func.Args) == 1 {
+		b.WriteString(fmt.Sprintf("(func: %s(%s)", q.Func.Name, q.Func.Args[0].Value))
+		writeOrderAndPage(b, q, true)
+		b.WriteRune(')')
+	}
+	// there's only uid(...) and type(...) functions at root level
 }
 
 func writeFilterFunction(b *strings.Builder, f *gql.Function) {
-	if f != nil {
-		b.WriteString(fmt.Sprintf("%s(%s)", f.Name, f.Args[0].Value))
-	}
-}
-
-func writeFilter(b *strings.Builder, f *gql.FilterTree) {
 	if f == nil {
 		return
 	}
 
-	if f.Func.Name == "type" {
-		b.WriteString(fmt.Sprintf(" @filter(type(%s))", f.Func.Args[0].Value))
-	} else {
-		b.WriteString(" @filter(")
-		writeFilterFunction(b, f.Func)
-		b.WriteString(")")
+	if len(f.Args) == 1 {
+		b.WriteString(fmt.Sprintf("%s(%s)", f.Name, f.Args[0].Value))
+	} else if len(f.Args) == 2 {
+		b.WriteString(fmt.Sprintf("%s(%s, %s)", f.Name, f.Args[0].Value, f.Args[1].Value))
+	}
+}
+
+func writeFilter(b *strings.Builder, ft *gql.FilterTree) {
+	if ft == nil {
+		return
+	}
+
+	switch ft.Op {
+	case "and", "or":
+		b.WriteRune('(')
+		for i, child := range ft.Child {
+			if i > 0 && i <= len(ft.Child)-1 {
+				b.WriteString(fmt.Sprintf(" %s ", strings.ToUpper(ft.Op)))
+			}
+			writeFilter(b, child)
+		}
+		b.WriteRune(')')
+	case "not":
+		if len(ft.Child) > 0 {
+			b.WriteString("NOT (")
+			writeFilter(b, ft.Child[0])
+			b.WriteRune(')')
+		}
+	default:
+		writeFilterFunction(b, ft.Func)
+	}
+}
+
+func hasOrderOrPage(q *gql.GraphQuery) bool {
+	_, hasFirst := q.Args["first"]
+	_, hasOffset := q.Args["offset"]
+	return len(q.Order) > 0 || hasFirst || hasOffset
+}
+
+func writeOrderAndPage(b *strings.Builder, query *gql.GraphQuery, root bool) {
+	var wroteOrder, wroteFirst bool
+
+	for _, ord := range query.Order {
+		if root {
+			b.WriteString(", ")
+		}
+		if ord.Desc {
+			b.WriteString("orderdesc: ")
+		} else {
+			b.WriteString("orderasc: ")
+		}
+		b.WriteString(ord.Attr)
+		wroteOrder = true
+	}
+
+	if first, ok := query.Args["first"]; ok {
+		if root || wroteOrder {
+			b.WriteString(", ")
+		}
+		b.WriteString("first: ")
+		b.WriteString(first)
+		wroteFirst = true
+	}
+
+	if offset, ok := query.Args["offset"]; ok {
+		if root || wroteOrder || wroteFirst {
+			b.WriteString(", ")
+		}
+		b.WriteString("offset: ")
+		b.WriteString(offset)
 	}
 }

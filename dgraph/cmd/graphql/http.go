@@ -64,6 +64,7 @@ func (gh *graphqlHandler) resolverForRequest(r *http.Request) (rr *resolve.Reque
 	rr = resolve.New(
 		schema.AsSchema(gh.schema),
 		dgraph.AsDgraph(gh.dgraphClient),
+		rewrite.NewQueryRewriter(),
 		rewrite.NewMutationBuilder())
 
 	switch r.Method {
