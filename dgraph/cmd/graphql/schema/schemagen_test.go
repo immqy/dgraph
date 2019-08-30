@@ -242,7 +242,7 @@ func TestOnlyCorrectSearchablesWork(t *testing.T) {
 
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			_, errlist := NewSchemaHandler(test.schema)
+			_, errlist := NewHandler(test.schema)
 			require.Len(t, errlist, test.expectedErrors,
 				"every field in this test applies @searchable wrongly and should raise an error")
 		})
