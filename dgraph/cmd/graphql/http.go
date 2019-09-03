@@ -28,6 +28,7 @@ import (
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/resolve"
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/rewrite"
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/schema"
+	"github.com/dgraph-io/dgraph/x"
 	"github.com/vektah/gqlparser/ast"
 	"github.com/vektah/gqlparser/gqlerror"
 )
@@ -41,6 +42,7 @@ type graphqlHandler struct {
 // via GraphQL->Dgraph->GraphQL.  It writes a valid GraphQL JSON response
 // to w.
 func (gh *graphqlHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	x.AddCorsHeaders(w)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 
