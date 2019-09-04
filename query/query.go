@@ -2648,7 +2648,7 @@ func (req *Request) ProcessQuery(ctx context.Context) (err error) {
 // ExecutionResult holds the result of running a query.
 type ExecutionResult struct {
 	Subgraphs  []*SubGraph
-	SchemaNode []*pb.SchemaNode
+	SchemaNode []*api.SchemaNode
 	Types      []*pb.TypeUpdate
 }
 

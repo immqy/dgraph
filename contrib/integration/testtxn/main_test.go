@@ -232,15 +232,12 @@ func TestTxnRead5(t *testing.T) {
 	mu = &api.Mutation{}
 	mu.SetJson = []byte(fmt.Sprintf("{\"uid\": \"%s\", \"name\": \"Manish2\"}", uid))
 
-	muReq := api.Request{
-		Mutations: []*api.Mutation{mu},
-		CommitNow: true,
-	}
-	res, err := dc.Query(context.Background(), &muReq)
+	mu.CommitNow = true
+	res, err := dc.Mutate(context.Background(), mu)
 	if err != nil {
 		log.Fatalf("Error while running mutation: %v\n", err)
 	}
-	x.AssertTrue(res.Txn.StartTs > 0)
+	x.AssertTrue(res.Context.StartTs > 0)
 	resp, err = dc.Query(context.Background(), &req)
 	if err != nil {
 		log.Fatalf("Error while running query: %v\n", err)

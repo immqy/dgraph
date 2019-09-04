@@ -265,9 +265,8 @@ const queryUser = `
 
 // authorizeUser queries the user with the given user id, and returns the associated uid,
 // acl groups, and whether the password stored in DB matches the supplied password
-func authorizeUser(ctx context.Context, userid string, password string) (
-	*acl.User, error) {
-
+func authorizeUser(ctx context.Context, userid string, password string) (*acl.User,
+	error) {
 	queryVars := map[string]string{
 		"$userid":   userid,
 		"$password": password,
@@ -277,7 +276,7 @@ func authorizeUser(ctx context.Context, userid string, password string) (
 		Vars:  queryVars,
 	}
 
-	queryResp, err := (&Server{}).doQuery(ctx, &queryRequest, NoAuthorize)
+	queryResp, err := (&Server{}).doQuery(ctx, &queryRequest)
 	if err != nil {
 		glog.Errorf("Error while query user with id %s: %v", userid, err)
 		return nil, err
@@ -311,7 +310,7 @@ func RefreshAcls(closer *y.Closer) {
 
 		ctx := context.Background()
 		var err error
-		queryResp, err := (&Server{}).doQuery(ctx, &queryRequest, NoAuthorize)
+		queryResp, err := (&Server{}).doQuery(ctx, &queryRequest)
 		if err != nil {
 			return errors.Errorf("unable to retrieve acls: %v", err)
 		}
@@ -363,7 +362,7 @@ func ResetAcl() {
 			Vars:  queryVars,
 		}
 
-		queryResp, err := (&Server{}).doQuery(ctx, &queryRequest, NoAuthorize)
+		queryResp, err := (&Server{}).doQuery(ctx, &queryRequest)
 		if err != nil {
 			return errors.Wrapf(err, "while querying user with id %s", x.GrootId)
 		}
@@ -380,18 +379,13 @@ func ResetAcl() {
 
 		// Insert Groot.
 		createUserNQuads := acl.CreateUserNQuads(x.GrootId, "password")
-		req := &api.Request{
+		mu := &api.Mutation{
 			StartTs:   startTs,
 			CommitNow: true,
-			Mutations: []*api.Mutation{
-				{
-					Set: createUserNQuads,
-				},
-			},
+			Set:       createUserNQuads,
 		}
 
-		_, err = (&Server{}).doMutate(context.Background(), req, NoAuthorize)
-		if err != nil {
+		if _, err := (&Server{}).doMutate(context.Background(), mu, false); err != nil {
 			return err
 		}
 		glog.Infof("Successfully upserted the groot account")
@@ -664,15 +658,23 @@ func logAccess(log *accessEntry) {
 }
 
 //authorizeQuery authorizes the query using the aclCachePtr
-func authorizeQuery(ctx context.Context, parsedReq *gql.Result) error {
+func authorizeQuery(ctx context.Context, req *api.Request) error {
 	if len(Config.HmacSecret) == 0 {
 		// the user has not turned on the acl feature
 		return nil
 	}
 
+	parsedReq, err := gql.Parse(gql.Request{
+		Str:       req.Query,
+		Variables: req.Vars,
+	})
+	if err != nil {
+		return err
+	}
+	preds := parsePredsFromQuery(parsedReq.Query)
+
 	var userId string
 	var groupIds []string
-	preds := parsePredsFromQuery(parsedReq.Query)
 	doAuthorizeQuery := func() error {
 		userData, err := extractUserAndGroups(ctx)
 		if err == nil {
@@ -708,7 +710,7 @@ func authorizeQuery(ctx context.Context, parsedReq *gql.Result) error {
 		return nil
 	}
 
-	err := doAuthorizeQuery()
+	err = doAuthorizeQuery()
 	if span := otrace.FromContext(ctx); span != nil {
 		span.Annotatef(nil, (&accessEntry{
 			userId:    userId,
