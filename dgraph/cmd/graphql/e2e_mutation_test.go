@@ -19,7 +19,6 @@ package graphql
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/dgraph-io/dgraph/dgraph/cmd/graphql/test"
@@ -46,7 +45,10 @@ func TestAddMutation(t *testing.T) {
 		t.Run("get Country", func(t *testing.T) {
 			// addCountry() asserts that the mutation response was as expected.
 			// Let's also check that what's in the DB is what we expect.
-			getCountry(t, countryUID)
+			expected := fmt.Sprintf(
+				`{ "data": { "getCountry": { "id": "%s", "name": "Testland" } } }`,
+				countryUID)
+			getCountry(t, countryUID, expected)
 		})
 	})
 
@@ -105,26 +107,6 @@ func addCountry(t *testing.T) string {
 	country :=
 		respJSON["data"].(map[string]interface{})["addCountry"].(map[string]interface{})["country"]
 	return country.(map[string]interface{})["id"].(string)
-}
-
-func getCountry(t *testing.T, uid string) {
-	getCountryParams := &GraphQLParams{
-		Query: `query getCountry($createdID: ID!) {
-			getCountry(id: $createdID) {
-				id
-				name
-			}
-		}`,
-		Variables: map[string]interface{}{"createdID": uid},
-	}
-	getCountryExpected := `{ "data": { "getCountry": { "id": "_UID_", "name": "Testland" } } }`
-
-	resp, err := getCountryParams.ExecuteAsPost(graphqlURL)
-	require.NoError(t, err)
-
-	require.JSONEq(t,
-		strings.ReplaceAll(getCountryExpected, "_UID_", uid),
-		string(resp))
 }
 
 func addAuthor(t *testing.T, countryUID string) string {
@@ -318,3 +300,173 @@ func getPost(t *testing.T, postUID, authorUID, countryUID string) {
 
 	require.JSONEq(t, getPostExpected, string(resp))
 }
+
+func TestUpdateMutation(t *testing.T) {
+	countryUID := addCountry(t)
+	country := fmt.Sprintf(`{ "id": "%s", "name": "updated name" }`, countryUID)
+
+	t.Run("update Country", func(t *testing.T) {
+		expected := `{ "data": { "updateCountry": { "country": ` + country + `} } }`
+		updateCountry(t, countryUID, expected)
+	})
+
+	t.Run("get Country", func(t *testing.T) {
+		getCountry(t, countryUID, `{ "data": { "getCountry": `+country+`} }`)
+	})
+}
+
+func updateCountry(t *testing.T, countryUID, expected string) {
+	updateParams := &GraphQLParams{
+		Query: `mutation newName($country: ID!) {
+			updateCountry(input: { id: $country, patch: { name: "updated name" } }) {
+				country {
+					id
+					name
+				}
+			}
+		}`,
+		Variables: map[string]interface{}{"country": countryUID},
+	}
+
+	resp, err := updateParams.ExecuteAsPost(graphqlURL)
+	require.NoError(t, err)
+
+	require.JSONEq(t, expected, string(resp))
+}
+
+func TestDeleteMutation(t *testing.T) {
+	countryUID := addCountry(t)
+	t.Run("delete Country", func(t *testing.T) {
+		deleteCountryExpected := `{ "data": { "deleteCountry" : { "msg": "Deleted" } } }`
+		deleteCountry(t, countryUID, deleteCountryExpected)
+	})
+
+	t.Run("check Country is deleted", func(t *testing.T) {
+		getCountry(t, countryUID, `{ "data": { "getCountry": null } }`)
+	})
+}
+
+func deleteCountry(t *testing.T, countryUID string, deleteCountryExpected string) {
+	deleteCountryParams := &GraphQLParams{
+		Query: `mutation addCountries($del: ID!) {
+			deleteCountry(id: $del) { msg }
+		}`,
+		Variables: map[string]interface{}{"del": countryUID},
+	}
+
+	resp, err := deleteCountryParams.ExecuteAsPost(graphqlURL)
+	require.NoError(t, err)
+
+	require.JSONEq(t, deleteCountryExpected, string(resp))
+}
+
+func TestDeleteWrongID(t *testing.T) {
+	countryUID := addCountry(t)
+	authorUID := addAuthor(t, countryUID)
+
+	expected := `{ 
+		"data": { "deleteCountry": null },
+		"errors": [ { "message":"input: couldn't complete deleteCountry because ` +
+		fmt.Sprintf(`input: Node with id %s is not of type Country"}]}`, authorUID)
+
+	deleteCountry(t, authorUID, expected)
+}
+
+func TestManyMutations(t *testing.T) {
+	countryUID := addCountry(t)
+	multiMutationParams := &GraphQLParams{
+		Query: `mutation addCountries($name1: String!, $del: ID!, $name2: String!) {
+			add1: addCountry(input: { name: $name1 }) {
+				country {
+					id
+					name
+				}
+			}
+
+			deleteCountry(id: $del) { msg }
+
+			add2: addCountry(input: { name: $name2 }) {
+				country {
+					id
+					name
+				}
+			}
+		}`,
+		Variables: map[string]interface{}{
+			"name1": "Testland1", "del": countryUID, "name2": "Testland2"},
+	}
+	multiMutationExpected := `{ "data": { 
+		"add1": { "country": { "id": "_UID_", "name": "Testland1" } },
+		"deleteCountry" : { "msg": "Deleted" }, 
+		"add2": { "country": { "id": "_UID_", "name": "Testland2" } }
+	} }`
+
+	resp, err := multiMutationParams.ExecuteAsPost(graphqlURL)
+	require.NoError(t, err)
+
+	replacedJSON, err := test.ReplaceJSON(resp,
+		map[string]interface{}{"id": "_UID_", "requestID": "requestID"})
+	require.JSONEq(t, multiMutationExpected, string(replacedJSON))
+
+	t.Run("country deleted", func(t *testing.T) {
+		getCountry(t, countryUID, `{ "data": { "getCountry": null } }`)
+	})
+}
+
+// TestManyMutationsWithError : Multiple mutations run serially (queries would
+// run in parallel) and if an error is encountered, the mutations following the
+// error are not run.  The mutations that have succeeded are permanent -
+// i.e. not rolled back.
+//
+// Note that there's 3 mutations, but one of those `add2` never gets executed,
+// so there should be no field for it in the result - that's different to a field
+// that starts execution, like `deleteCountry`, but fails.
+func TestManyMutationsWithError(t *testing.T) {
+	countryUID := addCountry(t)
+	authorUID := addAuthor(t, countryUID)
+
+	// add1 - should succeed
+	// deleteCountry - should fail (given uid is not a Country)
+	// add2 - is never executed
+	multiMutationParams := &GraphQLParams{
+		Query: `mutation addCountries($del: ID!) {
+			add1: addCountry(input: { name: "Testland" }) {
+				country {
+					id
+					name
+				}
+			}
+
+			deleteCountry(id: $del) { msg }
+
+			add2: addCountry(input: { name: "abc" }) {
+				country {
+					id
+					name
+				}
+			}
+		}`,
+		Variables: map[string]interface{}{"del": authorUID},
+	}
+	expectedData := `"data": { 
+		"add1": { "country": { "id": "_UID_", "name": "Testland" } },
+		"deleteCountry" : null
+	}`
+	expectedErrors := `"errors": [ { "message": "input: couldn't complete deleteCountry because ` +
+		fmt.Sprintf(`input: Node with id %s is not of type Country"},`, authorUID) +
+		`{ "message": "mutation add2 not executed because of previous error" } ]`
+	expected := "{ " + expectedData + "," + expectedErrors + "}"
+
+	resp, err := multiMutationParams.ExecuteAsPost(graphqlURL)
+	require.NoError(t, err)
+
+	replacedJSON, err := test.ReplaceJSON(resp,
+		map[string]interface{}{"id": "_UID_", "requestID": "requestID"})
+	require.JSONEq(t, expected, string(replacedJSON))
+
+	// Make sure that final mutation didn't run
+	t.Run("Country wasn't added", func(t *testing.T) {
+		queryCountryByRegExp(t, "/abc/", `{ "data": { "queryCountry": [] } }`)
+	})
+}
+
